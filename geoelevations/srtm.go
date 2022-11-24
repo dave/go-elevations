@@ -192,36 +192,173 @@ func (self *SrtmFile) getElevation(client *http.Client, storage SrtmLocalStorage
 	return elevation, nil
 }
 
-func (self SrtmFile) getElevationFromRowAndColumn(row, column int) float64 {
-	i := row*self.squareSize + column
-	byte1 := self.contents[i*2]
-	byte2 := self.contents[i*2+1]
-	result := int(byte1)*256 + int(byte2)
+//var total = 0
+//var totals = map[string]int{
+//	"valid":                0,
+//	"interpolated-row-col": 0,
+//	"interpolated-row":     0,
+//	"interpolated-col":     0,
+//	"interpolated-r1":      0,
+//	"interpolated-r2":      0,
+//	"interpolated-c1":      0,
+//	"interpolated-c2":      0,
+//}
 
-	if result > 9000 {
-		return math.NaN()
+func (self SrtmFile) getElevationFromRowAndColumn(row, column int) float64 {
+	var do = func(row, column int) int {
+		i := row*self.squareSize + column
+		byte1 := self.contents[i*2]
+		byte2 := self.contents[i*2+1]
+		return int(byte1)*256 + int(byte2)
+	}
+	result := do(row, column)
+
+	//total++
+	//
+	//if total%1000 == 0 {
+	//	fmt.Printf("%#v\n", totals)
+	//}
+
+	if result < 9000 {
+		// result is a valid elevation
+		//totals["valid"]++
+		return float64(result)
 	}
 
-	return float64(result)
+	// result is a void area, we can estimate by interpolating nearby values
+
 	/*
-	   i = row * (@square_side) + column
-
-	   i < @square_side ** 2 or raise "Invalid i=#{i}"
-
-	   @file.seek(i * 2)
-	   bytes = @file.read(2)
-	   byte_1 = bytes[0].ord
-	   byte_2 = bytes[1].ord
-
-	   result = byte_1 * 256 + byte_2
-
-	   if result > 9000
-	       # TODO(TK) try to detect the elevation from neighbour point:
-	       return nil
-	   end
-
-	   result
+		Very simple interpolation algorithm:
+		* We step along the row backwards and forwards until we find a valid elevation value.
+		* We do the same for the column.
+		* If we get to the end of the square (e.g. row >= self.squareSize, row < 0, col >= self.squareSize,
+		col < 0) we give up.
+		* We work out a value for the estimated elevation by simple geometry.
+		* If we have success from both row and column, we return the average of the elevation value obtained from
+		both methods.
 	*/
+
+	// r => row
+	// c => col
+	// 1 => reduced index
+	// 2 => increased index
+	// i => the index of the row / column
+	// v => the elevation
+	// b => was the lookup successful?
+	var ri1, ri2, ci1, ci2 int
+	var rv1, rv2, cv1, cv2 int
+	var rb1, rb2, cb1, cb2 bool
+
+	for ri1 = row - 1; ri1 >= 0; ri1-- {
+		rv1 = do(ri1, column)
+		if rv1 < 9000 {
+			rb1 = true
+			break
+		}
+	}
+
+	for ri2 = row + 1; ri2 < self.squareSize; ri2++ {
+		rv2 = do(ri2, column)
+		if rv2 < 9000 {
+			rb2 = true
+			break
+		}
+	}
+
+	for ci1 = column - 1; ci1 >= 0; ci1-- {
+		cv1 = do(row, ci1)
+		if cv1 < 9000 {
+			cb1 = true
+			break
+		}
+	}
+
+	for ci2 = column + 1; ci2 < self.squareSize; ci2++ {
+		cv2 = do(row, ci2)
+		if cv2 < 9000 {
+			cb2 = true
+			break
+		}
+	}
+
+	var rb, cb bool
+	var rv, cv float64
+	if rb1 && rb2 {
+		rb = true
+		rowCount := ri2 - ri1
+		eleDelta := rv2 - rv1
+		elePerRow := float64(eleDelta) / float64(rowCount)
+		rv = float64(rv1) + (float64(row-ri1) * elePerRow)
+	}
+	if cb1 && cb2 {
+		cb = true
+		colCount := ci2 - ci1
+		eleDelta := cv2 - cv1
+		elePerCol := float64(eleDelta) / float64(colCount)
+		cv = float64(cv1) + (float64(column-ci1) * elePerCol)
+	}
+	if rb && cb {
+		//fmt.Printf(
+		//	"row %d: %d (%dm) -> %d (%dm) => (%dm), col %d: %d (%dm) -> %d (%dm) => (%dm)... RESULT: %d\n",
+		//	row,
+		//	ri1, rv1,
+		//	ri2, rv2,
+		//	int(rv),
+		//	column,
+		//	ci1, cv1,
+		//	ci2, cv2,
+		//	int(cv),
+		//	int((rv+cv)/2.0),
+		//)
+		//totals["interpolated-row-col"]++
+		return (rv + cv) / 2.0
+	}
+	if rb {
+		//fmt.Printf(
+		//	"row %d: %d (%dm) -> %d (%dm) - RESULT = %dm [col %d failed: %d (%dm) -> %d (%dm)]\n",
+		//	row,
+		//	ri1, rv1,
+		//	ri2, rv2,
+		//	int(rv),
+		//	column,
+		//	ci1, cv1,
+		//	ci2, cv2,
+		//)
+		//totals["interpolated-row"]++
+		return rv
+	}
+	if cb {
+		//fmt.Printf(
+		//	"col %d: %d (%dm) -> %d (%dm) - RESULT = %dm [row %d failed: %d (%dm) -> %d (%dm)]\n",
+		//	column,
+		//	ci1, cv1,
+		//	ci2, cv2,
+		//	int(cv),
+		//	row,
+		//	ri1, rv1,
+		//	ri2, rv2,
+		//)
+		//totals["interpolated-col"]++
+		return cv
+	}
+	if rb1 {
+		//totals["interpolated-r1"]++
+		return float64(rv1)
+	}
+	if rb2 {
+		//totals["interpolated-r2"]++
+		return float64(rv2)
+	}
+	if cb1 {
+		//totals["interpolated-c1"]++
+		return float64(cv1)
+	}
+	if cb2 {
+		//totals["interpolated-c2"]++
+		return float64(cv2)
+	}
+	return math.NaN()
+
 }
 
 func (self SrtmFile) getRowAndColumn(latitude, longitude float64) (int, int) {
