@@ -4,3 +4,4 @@ tags
 *.hgt
 *.hgt.zip
 vendor/*
+.idea

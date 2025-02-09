@@ -1,4 +1,4 @@
-module github.com/tkrajina/go-elevations
+module github.com/dave/go-elevations
 
 go 1.16
 

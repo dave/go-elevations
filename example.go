@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/tkrajina/go-elevations/geoelevations"
+	"github.com/dave/go-elevations/geoelevations"
 )
 
 func main() {
